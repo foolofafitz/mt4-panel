@@ -5,6 +5,7 @@ import os
 import json
 import time
 import math
+import getchlib
 import zmq
 from dataclasses import dataclass
 
@@ -19,7 +20,6 @@ from rich.live import Live
 
 from rich import print as print
 
-from getchlib import getkey
 
 console = Console()
 console.show_cursor(False)
@@ -164,12 +164,7 @@ def update_records(msg):
             records[o.symbol] = Record(o)
 
 
-def draw_panel(mode="records", symbol=None):
-    global layout
-
-    footer_style = "bright_red" if profit < 0 else "bright_green"
-    footer = Text(f"{balance:,.2f} | {profit:,.2f} ({abs(profit / balance * 100):.2f}%) | {equity:,.2f}", style=footer_style, justify="center")
-
+def draw_records():
     table = Table(show_header=False, box=None, min_width=40, expand=True)
     table.add_column("Symbol")
     table.add_column("Position", justify="left")
@@ -185,6 +180,41 @@ def draw_panel(mode="records", symbol=None):
             style = "bright_green"
 
         table.add_row(r.symbol, r.position(), str(f"{r.total():,.2f}"), style=style)
+
+    return table
+
+def draw_orders():
+    table = Table(show_header=False, box=None, min_width=40, expand=True)
+    table.add_column("Ticket")
+    table.add_column("Symbol")
+    table.add_column("Size")
+    table.add_column("Swap")
+    table.add_column("Profit")
+
+    for k in list(orders.keys()):
+        o = orders[k]
+        if o.type in [0,1]:
+            table.add_row(
+                f"{o.ticket}",
+                f"{o.symbol}",
+                f"{o.size:.2f}",
+                f"{o.swap:.2f}",
+                f"{o.profit:,.2f}"
+            )
+
+    return table
+
+
+def draw_panel(mode="records", symbol=None):
+    global layout
+
+    footer_style = "bright_red" if profit < 0 else "bright_green"
+    footer = Text(f"{balance:,.2f} | {profit:,.2f} ({abs(profit / balance * 100):.2f}%) | {equity:,.2f}", style=footer_style, justify="center")
+
+    if mode == "records":
+        table = draw_records()
+    elif mode == "orders":
+        table = draw_orders()
 
     layout["upper"].update(Align.center(table, vertical="middle"))
     layout["lower"].update(footer)
@@ -212,8 +242,16 @@ def main():
         vertical="middle"), style="white on red")
 
     layout["upper"].update(nodata)
+    mode = "records"
 
-    with Live(layout, console=console, auto_refresh=False) as live:
+    def toggle_mode():
+        nonlocal mode
+        if mode == "records":
+            mode = "orders"
+        else:
+            mode = "records"
+
+    with Live(layout, console=console, auto_refresh=False, transient=True) as live:
         live.update(layout, refresh=True)
         while True:
             socks = dict(poller.poll(100))
@@ -223,15 +261,21 @@ def main():
                 last_message_time = int(time.time())
                 update_records(data)
                 layout["lower"].visible = True
-                draw_panel()
+                draw_panel(mode)
                 live.update(layout, refresh=True)
             elif int(time.time()) - last_message_time > TTL:
                 layout["upper"].update(nodata)
                 layout["lower"].visible = False
                 live.update(layout, refresh=True)
 
+            k = getchlib.getkey(False)
+            match k:
+                case '\t':
+                    toggle_mode()
+                case 'q' | 'Q' | '\33':
+                    exit(0)
 
-if __name__ == '__main__':                
+if __name__ == '__main__':
     global account
 
     if len(sys.argv) < 2:
