@@ -142,7 +142,8 @@ class Symbol:
             return "NONE"
 
     def has_open_orders(self) -> bool:
-        for o in self.orders:
+        for k in self.orders.keys():
+            o = self.orders[k]
             if o.type in [OP_BUY, OP_SELL]:
                 return True
         return False
@@ -197,7 +198,7 @@ def update_symbols(msg):
                     )
                 symbols[name].add_order(o)
 
-    delete_old_orders()
+    #delete_old_orders()
 
 
 def ctf(num: float) -> Text:
@@ -228,8 +229,8 @@ def draw_symbols():
     with lock:
         for key in sorted(symbols):
             r = symbols[key]
-            #if not r.has_open_orders():
-            #    continue
+            if not r.has_open_orders():
+                continue
             if r.total() < 0:
                 style = "bright_red"
             else:
@@ -245,9 +246,10 @@ def draw_orders():
     global orders
     table = Table(box=box.SIMPLE, min_width=40, expand=True)
 
-    table.add_column("Ticket")
     table.add_column("Symbol")
-    table.add_column("Size")
+    table.add_column("Ticket", justify="center")
+    table.add_column("Type", justify="center")
+    table.add_column("Size", justify="center")
     table.add_column("Swap", justify="right")
     table.add_column("Profit", justify="right")
 
@@ -271,15 +273,18 @@ def draw_orders():
                     else:
                         profit.stylize("bright_green")
 
-                    table.add_row(
-                        f"{o.ticket}",
-                        f"{o.symbol}",
-                        f"{o.size:.2f}",
-                        swap,
-                        profit
-                )
-                layout["debug"].update(Text(f"{t} {o.timestamp}"))
-                live.update(layout, refresh=True)
+                    if o.type > 1 and not hide_pending:
+                        table.add_row(
+                            f"{o.symbol}",
+                            f"{o.ticket}",
+                            f"{ORDER_TYPES[o.type]}",
+                            f"{o.size:.2f}",
+                            swap,
+                            profit
+                            )
+            table.add_section()
+        #layout["debug"].update(Text(f"{t - o.timestamp}"))
+        live.update(layout, refresh=True)
 
     return table
 
@@ -357,25 +362,24 @@ def delete_old_orders():
     global orders
     global symbols
     global layout
+    global live
+
 
     t = int(time.time())
     lock = threading.Lock()
 
-    while not quit:
-        with lock:
-            for key in list(sorted(symbols.keys())):
-                for k in list(sorted(symbols[key].orders.keys())):
-                    o = symbols[key].orders[k]
-                    layout["debug"].update(Text(f"{t} {o.timestamp}"))
-                    live.update(layout, refresh=True)
+    with lock:
+        for key in list(sorted(symbols.keys())):
+            for k in list(sorted(symbols[key].orders.keys())):
+                o = symbols[key].orders[k]
+                #layout["debug"].update(Text(f"{t - o.timestamp}"))
 
-                    if t - o.timestamp > TTL:
-                        symbols[o.symbol].remove_order(o.ticket)
-                        if len(symbols[o.symbol].orders) == 0:
-                            del symbols[o.symbol]
-                        del orders[k]
-                        del o
-        time.sleep(1)
+                if t - o.timestamp > TTL:
+                    symbols[o.symbol].remove_order(o.ticket)
+                    if len(symbols[o.symbol].orders) == 0:
+                        del symbols[o.symbol]
+                    del orders[k]
+                    del o
 
 
 def wait_for_message():
@@ -383,7 +387,6 @@ def wait_for_message():
     global quit
     global mode
     global mode_index
-    global stop
     global live
     global orders
     global symbols
@@ -391,7 +394,7 @@ def wait_for_message():
     subscriber.setsockopt_string(zmq.SUBSCRIBE, account)
     layout = Layout()
     layout.split_column(
-            Layout(name="debug"),
+            #Layout(name="debug"),
             Layout(name="upper"),
             Layout(name="lower")
             )
@@ -426,7 +429,11 @@ def wait_for_message():
                     layout["upper"].update(nodata)
                     layout["lower"].visible = False
                     live.update(layout, refresh=True)
-            #delete_old_orders()
+            l = len(orders)
+            delete_old_orders()
+            if len(orders) != l:
+                live.update(layout, refresh=True)
+
 
 def main():
     global layout
@@ -434,19 +441,14 @@ def main():
     global hide
     global quit
     global mode
-    global stop
     global mode_index
     global live
     global orders
+    global hide_pending
 
+    hide_pending = False
     data_thread = threading.Thread(target=wait_for_message)
-    #cleanup_thread = threading.Thread(target=delete_old_orders)
-
     data_thread.start()
-    #cleanup_thread.start()
-
-    stop = False
-
     lock = threading.Lock()
 
     while not quit:
@@ -475,6 +477,11 @@ def main():
                     mode = modes[mode_index]
                     draw_panel(mode)
                     live.update(layout, refresh=True)
+            case 'O':
+                with lock:
+                    hide_pending = not hide_pending
+                    draw_panel(mode)
+                    live.update(layout, refresh=True)
             case 'P':
                 with lock:
                     mode_index = 2
@@ -486,7 +493,7 @@ def main():
 
         if quit:
             data_thread.join()
-            #sys.exit(0)
+            sys.exit(0)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
@@ -494,6 +501,4 @@ if __name__ == '__main__':
     else:
         account = sys.argv[1]
     main()
-    print("END")
-    print(orders)
 
