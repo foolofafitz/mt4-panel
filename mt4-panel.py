@@ -38,7 +38,7 @@ equity = 0.0
 quit = False
 
 
-modes = ["records", "orders", "pending"]
+modes = ["positions", "orders", "pending"]
 mode_index = 0
 mode = modes[mode_index]
 
@@ -301,7 +301,7 @@ def draw_panel(mode):
         footer.append(f"${profit:,.2f}", style = style)
 
     match mode:
-        case "records":
+        case "positions":
             table = draw_records()
         case "orders":
             table = draw_orders()
@@ -407,6 +407,24 @@ def main():
             case 'h':
                 with lock:
                     hide = not hide
+                    draw_panel(mode)
+                    live.update(layout, refresh=True)
+            case 'p':
+                with lock:
+                    mode_index = 0
+                    mode = modes[mode_index]
+                    draw_panel(mode)
+                    live.update(layout, refresh=True)
+            case 'o':
+                with lock:
+                    mode_index = 1
+                    mode = modes[mode_index]
+                    draw_panel(mode)
+                    live.update(layout, refresh=True)
+            case 'P':
+                with lock:
+                    mode_index = 2
+                    mode = modes[mode_index]
                     draw_panel(mode)
                     live.update(layout, refresh=True)
             case 'q':
