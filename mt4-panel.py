@@ -390,6 +390,7 @@ def wait_for_message():
     global live
     global orders
     global symbols
+    global last_message_time
 
     subscriber.setsockopt_string(zmq.SUBSCRIBE, account)
     layout = Layout()
@@ -453,43 +454,47 @@ def main():
 
     while not quit:
         key = getkey()
-        match key:
-            case ' ':
-                with lock:
-                    mode_index = (mode_index + 1) % len(modes)
-                    mode = modes[mode_index]
-                    draw_panel(mode)
-                    live.update(layout, refresh=True)
-            case 'H':
-                with lock:
-                    hide = not hide
-                    draw_panel(mode)
-                    live.update(layout, refresh=True)
-            case 'p':
-                with lock:
-                    mode_index = 0
-                    mode = modes[mode_index]
-                    draw_panel(mode)
-                    live.update(layout, refresh=True)
-            case 'o':
-                with lock:
-                    mode_index = 1
-                    mode = modes[mode_index]
-                    draw_panel(mode)
-                    live.update(layout, refresh=True)
-            case 'h':
-                with lock:
-                    hide_pending = not hide_pending
-                    draw_panel(mode)
-                    live.update(layout, refresh=True)
-            case 'P':
-                with lock:
-                    mode_index = 2
-                    mode = modes[mode_index]
-                    draw_panel(mode)
-                    live.update(layout, refresh=True)
-            case 'q':
-                quit = True
+        t = int(time.time()) - last_message_time
+        if t < TTL:
+            match key:
+                case ' ':
+                    with lock:
+                        mode_index = (mode_index + 1) % len(modes)
+                        mode = modes[mode_index]
+                        draw_panel(mode)
+                        live.update(layout, refresh=True)
+                case 'H':
+                    with lock:
+                        hide = not hide
+                        draw_panel(mode)
+                        live.update(layout, refresh=True)
+                case 'p':
+                    with lock:
+                        mode_index = 0
+                        mode = modes[mode_index]
+                        draw_panel(mode)
+                        live.update(layout, refresh=True)
+                case 'o':
+                    with lock:
+                        mode_index = 1
+                        mode = modes[mode_index]
+                        draw_panel(mode)
+                        live.update(layout, refresh=True)
+                case 'h':
+                    with lock:
+                        hide_pending = not hide_pending
+                        draw_panel(mode)
+                        live.update(layout, refresh=True)
+                case 'P':
+                    with lock:
+                        mode_index = 2
+                        mode = modes[mode_index]
+                        draw_panel(mode)
+                        live.update(layout, refresh=True)
+                case 'q':
+                    quit = True
+        elif key == 'q':
+            quit = True
 
         if quit:
             data_thread.join()
