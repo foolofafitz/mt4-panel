@@ -1,5 +1,6 @@
 #!/usr/bin/env -S python -u
 
+import pdb
 import sys
 import os
 import json
@@ -83,20 +84,26 @@ class Symbol:
         self.bid = bid
         self.ask = ask
         self.digits = digits
-        self.orders = []
+        self.orders = {}
 
     def add_order(self, order) -> None:
-        self.orders.append(order)
+        self.orders[order.ticket] = order
+
+    def remove_order(self, ticket) -> None:
+        if ticket in self.orders:
+            del self.orders[ticket]
 
     def swap(self) -> float:
         p = 0
-        for o in self.orders:
+        for k in self.orders.keys():
+            o = orders[k]
             p += o.swap
         return p
 
     def profit(self) -> float:
         p = 0
-        for o in self.orders:
+        for k in self.orders.keys():
+            o = orders[k]
             p += o.profit
         return p
 
@@ -109,7 +116,8 @@ class Symbol:
     def position(self) -> str:
         lots = 0
         count = 0
-        for o in self.orders:
+        for k in self.orders.keys():
+            o = orders[k]
             if o.type == OP_BUY:
                 lots += o.size
                 count += 1
@@ -150,19 +158,18 @@ class Symbol:
 
 
 def update_symbols(msg):
-    j = json.loads(msg)
-
     global balance
     global profit 
     global equity 
+    global orders
+    global symbols
+
+    j = json.loads(msg)
 
     balance = j["balance"]
     profit = j["profit"]
     equity = j["equity"]
 
-    symbol_name = j["symbol"]["name"]
-
-    # current time
     t = int(time.time())
 
     if "orders" in j:
@@ -174,26 +181,23 @@ def update_symbols(msg):
                 o.swap = order["swap"]
                 o.timestamp = t
             except KeyError:
-                orders[ticket] = Order(*order.values(), t)
+                o = Order(*order.values(), t)
+                orders[ticket] = o
 
-    symbols.clear()
-    for k in list(orders.keys()):
-        o = orders[k]
-
-        if t - o.timestamp > TTL:
-            del orders[k]
-            continue
-
-        if symbol_name in symbols.keys():
-            symbols[symbol_name].add_order(o)
-        else:
-            symbols[symbol_name] = Symbol(
-                    j["symbol"]["name"],
+            name = j["symbol"]["name"]
+            if name in symbols:
+                if not o.ticket in symbols[name].orders:
+                    symbols[name].add_order(o)
+            else:
+                symbols[name] = Symbol(
+                    o.symbol,
                     j["symbol"]["bid"],
                     j["symbol"]["ask"],
                     j["symbol"]["digits"],
                     )
-            symbols[symbol_name].add_order(o)
+                symbols[name].add_order(o)
+
+    delete_old_orders()
 
 
 def ctf(num: float) -> Text:
@@ -204,6 +208,9 @@ def ctf(num: float) -> Text:
         return Text(f"{num:,.2f}", style="bright_green")
 
 def draw_symbols():
+    global symbols
+    global orders
+
     #table = Table.grid(padding=(0,2), expand=True)
     table = Table(box=box.SIMPLE, min_width=40, expand=True)
     table.add_column("Symbol")
@@ -216,22 +223,28 @@ def draw_symbols():
     #table.add_section()
     #table.add_section()
 
-    for key in sorted(symbols):
-        r = symbols[key]
-        if not r.has_open_orders():
-            continue
-        if r.total() < 0:
-            style = "bright_red"
-        else:
-            style = "bright_green"
+    t = int(time.time())
+    lock = threading.Lock()
+    with lock:
+        for key in sorted(symbols):
+            r = symbols[key]
+            #if not r.has_open_orders():
+            #    continue
+            if r.total() < 0:
+                style = "bright_red"
+            else:
+                style = "bright_green"
 
-        table.add_row(r.symbol, r.position(), ctf(r.profit()), ctf(r.swap()),
-                      Text(f"{r.total():,.2f}", style=style))
+            table.add_row(r.name, r.position(), ctf(r.profit()), ctf(r.swap()),
+                          Text(f"{r.total():,.2f}", style=style))
 
     return table
 
 def draw_orders():
+    global symbols
+    global orders
     table = Table(box=box.SIMPLE, min_width=40, expand=True)
+
     table.add_column("Ticket")
     table.add_column("Symbol")
     table.add_column("Size")
@@ -239,60 +252,72 @@ def draw_orders():
     table.add_column("Profit", justify="right")
 
     #table.add_section()
-    for k in list(orders.keys()):
-        o = orders[k]
-        if o.type in [0,1]:
-            swap = Text(f"{o.swap:,.2f}")
-            if o.swap < 0:
-                swap.stylize("bright_red")
-            else:
-                swap.stylize("bright_green")
+    t = int(time.time())
+    lock = threading.Lock()
+    with lock:
+        for key in list(sorted(symbols.keys())):
+            for k in list(sorted(symbols[key].orders.keys())):
+                o = orders[k]
+                if o.type in [0,1,2,3,4,5]:
+                    swap = Text(f"{o.swap:,.2f}")
+                    if o.swap < 0:
+                        swap.stylize("bright_red")
+                    else:
+                        swap.stylize("bright_green")
 
-            profit = Text(f"{o.profit:,.2f}")
-            if o.profit < 0:
-                profit.stylize("bright_red")
-            else:
-                profit.stylize("bright_green")
+                    profit = Text(f"{o.profit:,.2f}")
+                    if o.profit < 0:
+                        profit.stylize("bright_red")
+                    else:
+                        profit.stylize("bright_green")
 
-            table.add_row(
-                f"{o.ticket}",
-                f"{o.symbol}",
-                f"{o.size:.2f}",
-                swap,
-                profit
-        )
+                    table.add_row(
+                        f"{o.ticket}",
+                        f"{o.symbol}",
+                        f"{o.size:.2f}",
+                        swap,
+                        profit
+                )
+                layout["debug"].update(Text(f"{t} {o.timestamp}"))
+                live.update(layout, refresh=True)
 
     return table
 
 
 def draw_pending():
+    global symbols
+    global orders
+
     table = Table(box=box.SIMPLE, min_width=40, expand=True)
-    table.add_column("Ticket")
-    table.add_column("Symbol", justify="center")
+    table.add_column("Symbol")
+    table.add_column("Ticket", justify="center")
     table.add_column("Type"  , justify="center")
     table.add_column("Size"  , justify="center")
     table.add_column("Price" , justify="center")
     table.add_column("Bid"   , justify="center")
     table.add_column("Ask"   , justify="right")
 
-    print(symbols.keys())
-    for symbol in list(sorted(symbols.keys())):
-        s = symbols[symbol]
-        name = s.name
-        bid = s.bid
-        ask = s.ask
-        digits = s.digits
-        for o in s.orders:
-            if o.type > 1:
-                table.add_row(
-                    f"{o.ticket}",
-                    f"{name}",
-                    f"{ORDER_TYPES[o.type]}",
-                    f"{o.size:.2f}",
-                    f"{o.open_price:.{digits}f}",
-                    f"{bid:.{digits}f}",
-                    f"{ask:.{digits}f}",
-            )
+    lock = threading.Lock()
+    with lock:
+        for key in list(sorted(symbols.keys())):
+            s = symbols[key]
+            name = s.name
+            bid = s.bid
+            ask = s.ask
+            digits = s.digits
+            for k in list(sorted(symbols[key].orders.keys())):
+                #for k in s.orders.keys():
+                o = s.orders[k]
+                if o.type > 1:
+                    table.add_row(
+                        f"{s.name}",
+                        f"{o.ticket}",
+                        f"{ORDER_TYPES[o.type]}",
+                        f"{o.size:.2f}",
+                        f"{o.open_price:.{digits}f}",
+                        f"{bid:.{digits}f}",
+                        f"{ask:.{digits}f}",
+                        )
 
     return Align.center(Panel(table, title="Pending Orders"), vertical="middle")
 
@@ -300,6 +325,8 @@ def draw_pending():
 def draw_panel(mode):
     global layout
     global profit
+    global orders
+    global symbols
 
     style = "bright_red" if profit < 0 else "bright_green"
     footer = Text(justify="center")
@@ -326,21 +353,30 @@ def draw_panel(mode):
         layout["upper"].update(Align.center(table))
     layout["lower"].update(footer)
 
-#def wait_for_key():
-#    global quit
-#    global mode_index
-#    global layout
-#    global hide
-#
-#    while True:
-#        key = getkey()
-#        match key:
-#            case ' ':
-#                mode_index = (mode_index + 1) % len(modes)
-#            case 'h':
-#                hide = not hide
-#            case 'q':
-#                quit = True
+def delete_old_orders():
+    global orders
+    global symbols
+    global layout
+
+    t = int(time.time())
+    lock = threading.Lock()
+
+    while not quit:
+        with lock:
+            for key in list(sorted(symbols.keys())):
+                for k in list(sorted(symbols[key].orders.keys())):
+                    o = symbols[key].orders[k]
+                    layout["debug"].update(Text(f"{t} {o.timestamp}"))
+                    live.update(layout, refresh=True)
+
+                    if t - o.timestamp > TTL:
+                        symbols[o.symbol].remove_order(o.ticket)
+                        if len(symbols[o.symbol].orders) == 0:
+                            del symbols[o.symbol]
+                        del orders[k]
+                        del o
+        time.sleep(1)
+
 
 def wait_for_message():
     global layout
@@ -349,10 +385,13 @@ def wait_for_message():
     global mode_index
     global stop
     global live
+    global orders
+    global symbols
 
     subscriber.setsockopt_string(zmq.SUBSCRIBE, account)
     layout = Layout()
     layout.split_column(
+            Layout(name="debug"),
             Layout(name="upper"),
             Layout(name="lower")
             )
@@ -387,6 +426,7 @@ def wait_for_message():
                     layout["upper"].update(nodata)
                     layout["lower"].visible = False
                     live.update(layout, refresh=True)
+            #delete_old_orders()
 
 def main():
     global layout
@@ -397,10 +437,13 @@ def main():
     global stop
     global mode_index
     global live
+    global orders
 
     data_thread = threading.Thread(target=wait_for_message)
+    #cleanup_thread = threading.Thread(target=delete_old_orders)
 
     data_thread.start()
+    #cleanup_thread.start()
 
     stop = False
 
@@ -443,7 +486,7 @@ def main():
 
         if quit:
             data_thread.join()
-            sys.exit(0)
+            #sys.exit(0)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
@@ -451,4 +494,6 @@ if __name__ == '__main__':
     else:
         account = sys.argv[1]
     main()
+    print("END")
+    print(orders)
 
