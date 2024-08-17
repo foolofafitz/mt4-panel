@@ -239,7 +239,8 @@ def draw_symbols():
             table.add_row(r.name, r.position(), ctf(r.profit()), ctf(r.swap()),
                           Text(f"{r.total():,.2f}", style=style))
 
-    return table
+    #return table
+    return Panel(Align.center(table, vertical="middle"), title="Open Positions")
 
 def draw_orders():
     global symbols
@@ -282,11 +283,15 @@ def draw_orders():
                             swap,
                             profit
                             )
-            table.add_section()
+            #table.add_section()
         #layout["debug"].update(Text(f"{t - o.timestamp}"))
         live.update(layout, refresh=True)
 
-    return table
+    #return table
+    if hide_pending:
+        return Align.center(Panel(table, title="Open Orders"), vertical="middle")
+    else:
+        return Align.center(Panel(table, title="All Orders"), vertical="middle")
 
 
 def draw_pending():
@@ -352,10 +357,10 @@ def draw_panel(mode):
             table = draw_pending()
 
     #layout["upper"].update(Align.center(table, vertical="middle"))
-    if mode == "pending":
-        layout["upper"].update(table)
-    else:
-        layout["upper"].update(Align.center(table))
+    #if mode == "pending":
+    #    layout["upper"].update(table)
+    #else:
+    layout["upper"].update(Align.center(table))
     layout["lower"].update(footer)
 
 def delete_old_orders():
