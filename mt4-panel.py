@@ -460,7 +460,7 @@ def main():
                     mode = modes[mode_index]
                     draw_panel(mode)
                     live.update(layout, refresh=True)
-            case 'h':
+            case 'H':
                 with lock:
                     hide = not hide
                     draw_panel(mode)
@@ -477,7 +477,7 @@ def main():
                     mode = modes[mode_index]
                     draw_panel(mode)
                     live.update(layout, refresh=True)
-            case 'O':
+            case 'h':
                 with lock:
                     hide_pending = not hide_pending
                     draw_panel(mode)
