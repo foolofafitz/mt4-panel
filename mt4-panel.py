@@ -4,12 +4,11 @@ import sys
 import os
 import json
 import time
-import math
-import getchlib
 import zmq
+import curses
+
 from dataclasses import dataclass
 
-import rich
 from rich.console import Console
 from rich.align import Align
 from rich.text import Text
@@ -19,11 +18,7 @@ from rich.layout import Layout
 from rich.live import Live
 
 from rich import print as print
-
-
-console = Console()
-console.show_cursor(False)
-
+from rich import box
 
 TTL = 5
 RESET_TERMINAL_INTERVAL = 10
@@ -31,9 +26,18 @@ RESET_TERMINAL_INTERVAL = 10
 OP_BUY = 0
 OP_SELL = 1
 
+ORDER_TYPES = ["BUY", "SELL", "BUY LIMIT", "BUY STOP", "SELL LIMIT", "SELL STOP"]
+
+SHOWFILE = '/home/jesse/.show-profit'
+
 balance = 0.0
 profit = 0.0
 equity = 0.0
+
+if os.path.exists(SHOWFILE):
+    hide = False
+else:
+    hide = True
 
 ctx = zmq.Context()
 records = {}
@@ -61,6 +65,9 @@ class Order:
     tp: float
     swap: float
     profit: float
+    bid: float
+    ask: float
+    digits: int
     timestamp: int
 
 
@@ -78,13 +85,13 @@ class Record:
         for o in self.orders:
             p += o.swap
         return p
-    
+
     def profit(self) -> float:
         p = 0
         for o in self.orders:
             p += o.profit
         return p
-    
+
     def lots(self) -> float:
         l = 0
         for o in self.orders:
@@ -93,18 +100,28 @@ class Record:
 
     def position(self) -> str:
         lots = 0
+        count = 0
         for o in self.orders:
             if o.type == OP_BUY:
                 lots += o.size
+                count += 1
             elif o.type == OP_SELL:
                 lots -= o.size
+                count += 1
             else:
                 continue
 
+        if count > 1:
+            s = f" ({count})"
+        else:
+            s = ""
+
         if lots > 0:
-            return f"LONG {lots:0.2f}"
+            #return f"⬆️ {lots:0.2f}"
+            return f"LONG {lots:0.2f}" + s
         elif lots < 0:
-            return f"SHORT {lots:0.2f}"
+            #return f"⬇️ {lots:0.2f}"
+            return f"SHORT {lots:0.2f}" + s
         else:
             return "NONE"
 
@@ -135,7 +152,7 @@ def update_records(msg):
     profit = j["profit"]
     equity = j["equity"]
 
-    symbol = j["symbol"]
+    #symbol = j["symbol"]
 
     # current time
     t = int(time.time())
@@ -146,6 +163,8 @@ def update_records(msg):
             o = orders[ticket]
             o.profit = order["profit"]
             o.swap = order["swap"]
+            o.bid = order["bid"]
+            o.ask = order["ask"]
             o.timestamp = t
         except KeyError:
             orders[ticket] = Order(*order.values(), t)
@@ -164,11 +183,25 @@ def update_records(msg):
             records[o.symbol] = Record(o)
 
 
+def ctf(num: float) -> Text:
+    """Convert float to colored text"""
+    if num < 0:
+        return Text(f"{num:,.2f}", style="bright_red")
+    else:
+        return Text(f"{num:,.2f}", style="bright_green")
+
 def draw_records():
-    table = Table(show_header=False, box=None, min_width=40, expand=True)
+    #table = Table.grid(padding=(0,2), expand=True)
+    table = Table(box=box.SIMPLE, min_width=40, expand=True)
     table.add_column("Symbol")
-    table.add_column("Position", justify="left")
+    table.add_column("Position")
+    table.add_column("Profit", justify="right")
+    table.add_column("Swap", justify="right")
     table.add_column("Total", justify="right")
+
+    #table.add_row("Symbol", "Position", "Swap", "Profit", "Total")
+    #table.add_section()
+    #table.add_section()
 
     for key in sorted(records):
         r = records[key]
@@ -179,81 +212,142 @@ def draw_records():
         else:
             style = "bright_green"
 
-        table.add_row(r.symbol, r.position(), str(f"{r.total():,.2f}"), style=style)
+        table.add_row(r.symbol, r.position(), ctf(r.profit()), ctf(r.swap()),
+                      Text(f"{r.total():,.2f}", style=style))
 
     return table
 
 def draw_orders():
-    table = Table(show_header=False, box=None, min_width=40, expand=True)
+    table = Table(box=box.SIMPLE, min_width=40, expand=True)
     table.add_column("Ticket")
     table.add_column("Symbol")
     table.add_column("Size")
-    table.add_column("Swap")
-    table.add_column("Profit")
+    table.add_column("Swap", justify="right")
+    table.add_column("Profit", justify="right")
 
+    #table.add_section()
     for k in list(orders.keys()):
         o = orders[k]
         if o.type in [0,1]:
+            swap = Text(f"{o.swap:,.2f}")
+            if o.swap < 0:
+                swap.stylize("bright_red")
+            else:
+                swap.stylize("bright_green")
+
+            profit = Text(f"{o.profit:,.2f}")
+            if o.profit < 0:
+                profit.stylize("bright_red")
+            else:
+                profit.stylize("bright_green")
+
             table.add_row(
                 f"{o.ticket}",
                 f"{o.symbol}",
                 f"{o.size:.2f}",
-                f"{o.swap:.2f}",
-                f"{o.profit:,.2f}"
-            )
+                swap,
+                profit
+        )
 
     return table
 
 
-def draw_panel(mode="records", symbol=None):
+def draw_pending():
+    table = Table(box=box.SIMPLE, min_width=40, expand=True)
+    table.add_column("Ticket")
+    table.add_column("Symbol", justify="center")
+    table.add_column("Type"  , justify="center")
+    table.add_column("Size"  , justify="center")
+    table.add_column("Price" , justify="center")
+    table.add_column("Bid"   , justify="center")
+    table.add_column("Ask"   , justify="right")
+
+    for k in list(orders.keys()):
+        o = orders[k]
+        if o.type > 1:
+            table.add_row(
+                f"{o.ticket}",
+                f"{o.symbol}",
+                f"{ORDER_TYPES[o.type]}",
+                f"{o.size:.2f}",
+                f"{o.open_price:.{o.digits}f}",
+                f"{o.bid:.{o.digits}f}",
+                f"{o.ask:.{o.digits}f}",
+        )
+
+    return Align.center(Panel(table, title="Pending Orders"), vertical="middle")
+
+
+def draw_panel(mode):
     global layout
+    global profit
 
-    footer_style = "bright_red" if profit < 0 else "bright_green"
-    footer = Text(f"{balance:,.2f} | {profit:,.2f} ({abs(profit / balance * 100):.2f}%) | {equity:,.2f}", style=footer_style, justify="center")
+    style = "bright_red" if profit < 0 else "bright_green"
+    footer = Text(justify="center")
+    if not hide:
+        footer.append(f"{balance:,.2f} | ")
+        footer.append(f"{profit:,.2f} ({abs(profit / balance * 100):.2f}%)", style = style)
+        footer.append(f" | {equity:,.2f}")
+    else:
+        footer.append("Profit: ")
+        footer.append(f"${profit:,.2f}", style = style)
 
-    if mode == "records":
-        table = draw_records()
-    elif mode == "orders":
-        table = draw_orders()
+    match mode:
+        case "records":
+            table = draw_records()
+        case "orders":
+            table = draw_orders()
+        case "pending":
+            table = draw_pending()
 
-    layout["upper"].update(Align.center(table, vertical="middle"))
+    #layout["upper"].update(Align.center(table, vertical="middle"))
+    if mode == "pending":
+        layout["upper"].update(table)
+    else:
+        layout["upper"].update(Align.center(table))
     layout["lower"].update(footer)
 
 
 def main():
     global layout
     global account
+    global hide
+
+    #stdscr = curses.initscr()
+    ##stdscr.clear()
+    #stdscr.nodelay(True)
 
     subscriber.setsockopt_string(zmq.SUBSCRIBE, account)
 
+    #console = Console()
+    #console.show_cursor(False)
+
+    modes = ["records", "orders", "pending"]
+    mode_index = 0
+    mode = modes[mode_index]
+
     last_message_time = int(time.time()) - 5
-    mode = "records"
 
     layout = Layout()
     layout.split_column(
             Layout(name="upper"),
             Layout(name="lower")
             )
-    layout["lower"].size = 1
+    layout["lower"].size = 2
     layout["lower"].visible = False
 
     nodata = Panel(Align.center(
         Text(f"{account} - NO DATA", justify="center"),
-        vertical="middle"), style="white on red")
+        vertical="middle"), style="red")
 
     layout["upper"].update(nodata)
-    mode = "records"
 
-    def toggle_mode():
-        nonlocal mode
-        if mode == "records":
-            mode = "orders"
-        else:
-            mode = "records"
+    quit = False
 
-    with Live(layout, console=console, auto_refresh=False, transient=True) as live:
+    #with Live(layout, console=console, auto_refresh=False, transient=True) as live:
+    with Live(layout, auto_refresh=False, transient=True) as live:
         live.update(layout, refresh=True)
-        while True:
+        while not quit:
             socks = dict(poller.poll(100))
             if subscriber in socks and socks[subscriber] == zmq.POLLIN:
                 msg = subscriber.recv()
@@ -267,13 +361,16 @@ def main():
                 layout["upper"].update(nodata)
                 layout["lower"].visible = False
                 live.update(layout, refresh=True)
+            #try:
+            #    k = stdscr.getch()
+            #    #print(k)
+            #    #stdscr.addstr(0, 0, k)
+            #    #stdscr.refresh()
+            #    if k == ord('q'):
+            #        quiit = True
+            #except:
+            #    pass
 
-            k = getchlib.getkey(False)
-            match k:
-                case '\t':
-                    toggle_mode()
-                case 'q' | 'Q' | '\33':
-                    exit(0)
 
 if __name__ == '__main__':
     global account
