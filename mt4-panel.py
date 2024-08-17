@@ -5,7 +5,8 @@ import os
 import json
 import time
 import zmq
-import curses
+import threading
+from getchlib import getkey
 
 from dataclasses import dataclass
 
@@ -33,6 +34,13 @@ SHOWFILE = '/home/jesse/.show-profit'
 balance = 0.0
 profit = 0.0
 equity = 0.0
+
+quit = False
+
+
+modes = ["records", "orders", "pending"]
+mode_index = 0
+mode = modes[mode_index]
 
 if os.path.exists(SHOWFILE):
     hide = False
@@ -307,27 +315,31 @@ def draw_panel(mode):
         layout["upper"].update(Align.center(table))
     layout["lower"].update(footer)
 
+#def wait_for_key():
+#    global quit
+#    global mode_index
+#    global layout
+#    global hide
+#
+#    while True:
+#        key = getkey()
+#        match key:
+#            case ' ':
+#                mode_index = (mode_index + 1) % len(modes)
+#            case 'h':
+#                hide = not hide
+#            case 'q':
+#                quit = True
 
-def main():
+def wait_for_message():
     global layout
-    global account
-    global hide
-
-    #stdscr = curses.initscr()
-    ##stdscr.clear()
-    #stdscr.nodelay(True)
+    global quit
+    global mode
+    global mode_index
+    global stop
+    global live
 
     subscriber.setsockopt_string(zmq.SUBSCRIBE, account)
-
-    #console = Console()
-    #console.show_cursor(False)
-
-    modes = ["records", "orders", "pending"]
-    mode_index = 0
-    mode = modes[mode_index]
-
-    last_message_time = int(time.time()) - 5
-
     layout = Layout()
     layout.split_column(
             Layout(name="upper"),
@@ -342,39 +354,69 @@ def main():
 
     layout["upper"].update(nodata)
 
-    quit = False
+    last_message_time = int(time.time()) - 5
+    lock = threading.Lock()
 
-    #with Live(layout, console=console, auto_refresh=False, transient=True) as live:
     with Live(layout, auto_refresh=False, transient=True) as live:
-        live.update(layout, refresh=True)
+        with lock:
+            live.update(layout, refresh=True)
         while not quit:
             socks = dict(poller.poll(100))
             if subscriber in socks and socks[subscriber] == zmq.POLLIN:
                 msg = subscriber.recv()
-                topic, data = msg.split()
-                last_message_time = int(time.time())
-                update_records(data)
-                layout["lower"].visible = True
-                draw_panel(mode)
-                live.update(layout, refresh=True)
+                with lock:
+                    topic, data = msg.split()
+                    last_message_time = int(time.time())
+                    update_records(data)
+                    layout["lower"].visible = True
+                    draw_panel(mode)
+                    live.update(layout, refresh=True)
             elif int(time.time()) - last_message_time > TTL:
-                layout["upper"].update(nodata)
-                layout["lower"].visible = False
-                live.update(layout, refresh=True)
-            #try:
-            #    k = stdscr.getch()
-            #    #print(k)
-            #    #stdscr.addstr(0, 0, k)
-            #    #stdscr.refresh()
-            #    if k == ord('q'):
-            #        quiit = True
-            #except:
-            #    pass
+                with lock:
+                    layout["upper"].update(nodata)
+                    layout["lower"].visible = False
+                    live.update(layout, refresh=True)
 
+def main():
+    global layout
+    global account
+    global hide
+    global quit
+    global mode
+    global stop
+    global mode_index
+    global live
+
+    data_thread = threading.Thread(target=wait_for_message)
+
+    data_thread.start()
+
+    stop = False
+
+    lock = threading.Lock()
+
+    while not quit:
+        key = getkey()
+        match key:
+            case ' ':
+                with lock:
+                    mode_index = (mode_index + 1) % len(modes)
+                    mode = modes[mode_index]
+                    draw_panel(mode)
+                    live.update(layout, refresh=True)
+            case 'h':
+                with lock:
+                    hide = not hide
+                    draw_panel(mode)
+                    live.update(layout, refresh=True)
+            case 'q':
+                quit = True
+
+        if quit:
+            data_thread.join()
+            sys.exit(0)
 
 if __name__ == '__main__':
-    global account
-
     if len(sys.argv) < 2:
         account = "711700"
     else:
