@@ -48,7 +48,7 @@ else:
     hide = True
 
 ctx = zmq.Context()
-records = {}
+symbols = {}
 orders = {}
 
 subscriber = ctx.socket(zmq.SUB)
@@ -73,17 +73,17 @@ class Order:
     tp: float
     swap: float
     profit: float
-    bid: float
-    ask: float
-    digits: int
     timestamp: int
 
 
-class Record:
+class Symbol:
     """Class to sum multiple orders of the same symbol"""
-    def __init__(self, order):
-        self.symbol = order.symbol
-        self.orders = [order]
+    def __init__(self, name, bid, ask, digits):
+        self.name = name
+        self.bid = bid
+        self.ask = ask
+        self.digits = digits
+        self.orders = []
 
     def add_order(self, order) -> None:
         self.orders.append(order)
@@ -149,7 +149,7 @@ class Record:
         return f"{self.symbol:6} {len(self.orders):4d} {self.position():>14} {self.profit():12,.2f}"
 
 
-def update_records(msg):
+def update_symbols(msg):
     j = json.loads(msg)
 
     global balance
@@ -160,24 +160,23 @@ def update_records(msg):
     profit = j["profit"]
     equity = j["equity"]
 
-    #symbol = j["symbol"]
+    symbol_name = j["symbol"]["name"]
 
     # current time
     t = int(time.time())
 
-    for order in j["orders"]:
-        ticket = order["ticket"]
-        try:
-            o = orders[ticket]
-            o.profit = order["profit"]
-            o.swap = order["swap"]
-            o.bid = order["bid"]
-            o.ask = order["ask"]
-            o.timestamp = t
-        except KeyError:
-            orders[ticket] = Order(*order.values(), t)
+    if "orders" in j:
+        for order in j["orders"]:
+            ticket = order["ticket"]
+            try:
+                o = orders[ticket]
+                o.profit = order["profit"]
+                o.swap = order["swap"]
+                o.timestamp = t
+            except KeyError:
+                orders[ticket] = Order(*order.values(), t)
 
-    records.clear()
+    symbols.clear()
     for k in list(orders.keys()):
         o = orders[k]
 
@@ -185,10 +184,16 @@ def update_records(msg):
             del orders[k]
             continue
 
-        if o.symbol in records.keys():
-            records[o.symbol].add_order(o)
+        if symbol_name in symbols.keys():
+            symbols[symbol_name].add_order(o)
         else:
-            records[o.symbol] = Record(o)
+            symbols[symbol_name] = Symbol(
+                    j["symbol"]["name"],
+                    j["symbol"]["bid"],
+                    j["symbol"]["ask"],
+                    j["symbol"]["digits"],
+                    )
+            symbols[symbol_name].add_order(o)
 
 
 def ctf(num: float) -> Text:
@@ -198,7 +203,7 @@ def ctf(num: float) -> Text:
     else:
         return Text(f"{num:,.2f}", style="bright_green")
 
-def draw_records():
+def draw_symbols():
     #table = Table.grid(padding=(0,2), expand=True)
     table = Table(box=box.SIMPLE, min_width=40, expand=True)
     table.add_column("Symbol")
@@ -211,8 +216,8 @@ def draw_records():
     #table.add_section()
     #table.add_section()
 
-    for key in sorted(records):
-        r = records[key]
+    for key in sorted(symbols):
+        r = symbols[key]
         if not r.has_open_orders():
             continue
         if r.total() < 0:
@@ -270,18 +275,24 @@ def draw_pending():
     table.add_column("Bid"   , justify="center")
     table.add_column("Ask"   , justify="right")
 
-    for k in list(orders.keys()):
-        o = orders[k]
-        if o.type > 1:
-            table.add_row(
-                f"{o.ticket}",
-                f"{o.symbol}",
-                f"{ORDER_TYPES[o.type]}",
-                f"{o.size:.2f}",
-                f"{o.open_price:.{o.digits}f}",
-                f"{o.bid:.{o.digits}f}",
-                f"{o.ask:.{o.digits}f}",
-        )
+    print(symbols.keys())
+    for symbol in list(sorted(symbols.keys())):
+        s = symbols[symbol]
+        name = s.name
+        bid = s.bid
+        ask = s.ask
+        digits = s.digits
+        for o in s.orders:
+            if o.type > 1:
+                table.add_row(
+                    f"{o.ticket}",
+                    f"{name}",
+                    f"{ORDER_TYPES[o.type]}",
+                    f"{o.size:.2f}",
+                    f"{o.open_price:.{digits}f}",
+                    f"{bid:.{digits}f}",
+                    f"{ask:.{digits}f}",
+            )
 
     return Align.center(Panel(table, title="Pending Orders"), vertical="middle")
 
@@ -302,7 +313,7 @@ def draw_panel(mode):
 
     match mode:
         case "positions":
-            table = draw_records()
+            table = draw_symbols()
         case "orders":
             table = draw_orders()
         case "pending":
@@ -367,7 +378,7 @@ def wait_for_message():
                 with lock:
                     topic, data = msg.split()
                     last_message_time = int(time.time())
-                    update_records(data)
+                    update_symbols(data)
                     layout["lower"].visible = True
                     draw_panel(mode)
                     live.update(layout, refresh=True)
