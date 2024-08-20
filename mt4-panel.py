@@ -187,6 +187,9 @@ def update_symbols(msg):
             # Open price might change for pending orders
             o.open_price = order["open_price"]
 
+            # Order type will change when pending order is activated
+            o.type = order["type"]
+
             # Update profit and swap for open orders
             o.profit = order["profit"]
             o.swap = order["swap"]
