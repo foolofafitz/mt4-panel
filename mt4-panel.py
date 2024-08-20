@@ -1,17 +1,15 @@
 #!/usr/bin/env -S python -u
 
-import pdb
 import sys
 import os
 import json
 import time
 import zmq
 import threading
-from getchlib import getkey
+from getch import getch
 
 from dataclasses import dataclass
 
-from rich.console import Console
 from rich.align import Align
 from rich.text import Text
 from rich.table import Table
@@ -30,7 +28,7 @@ OP_SELL = 1
 
 ORDER_TYPES = ["BUY", "SELL", "BUY LIMIT", "BUY STOP", "SELL LIMIT", "SELL STOP"]
 
-SHOWFILE = '/home/jesse/.show-profit'
+SHOWFILE = os.path.expanduser('~/.show-profit')
 
 balance = 0.0
 profit = 0.0
@@ -152,10 +150,10 @@ class Symbol:
         return self.profit() + self.swap()
 
     def get_row(self):
-        return (self.symbol, self.position, self.swap, self.profit, self.swap() + self.profit())
+        return (self.name, self.position, self.swap, self.profit, self.swap() + self.profit())
 
     def __str__(self):
-        return f"{self.symbol:6} {len(self.orders):4d} {self.position():>14} {self.profit():12,.2f}"
+        return f"{self.name:6} {len(self.orders):4d} {self.position():>14} {self.profit():12,.2f}"
 
 
 def update_symbols(msg):
@@ -178,11 +176,13 @@ def update_symbols(msg):
             ticket = order["ticket"]
             try:
                 o = orders[ticket]
+                o.open_price = order["open_price"]
                 o.profit = order["profit"]
                 o.swap = order["swap"]
                 o.timestamp = t
             except KeyError:
-                o = Order(*order.values(), t)
+                order["timestamp"] = t
+                o = Order(**order)
                 orders[ticket] = o
 
             name = j["symbol"]["name"]
@@ -198,7 +198,7 @@ def update_symbols(msg):
                     )
                 symbols[name].add_order(o)
 
-    #delete_old_orders()
+    delete_old_orders()
 
 
 def ctf(num: float) -> Text:
@@ -224,7 +224,6 @@ def draw_symbols():
     #table.add_section()
     #table.add_section()
 
-    t = int(time.time())
     lock = threading.Lock()
     with lock:
         for key in sorted(symbols):
@@ -239,8 +238,8 @@ def draw_symbols():
             table.add_row(r.name, r.position(), ctf(r.profit()), ctf(r.swap()),
                           Text(f"{r.total():,.2f}", style=style))
 
-    #return table
-    return Panel(Align.center(table, vertical="middle"), title="Open Positions")
+    #return Panel(Align.center(table, vertical="middle"), title="Open Positions")
+    return table
 
 def draw_orders():
     global symbols
@@ -255,7 +254,6 @@ def draw_orders():
     table.add_column("Profit", justify="right")
 
     #table.add_section()
-    t = int(time.time())
     lock = threading.Lock()
     with lock:
         for key in list(sorted(symbols.keys())):
@@ -274,7 +272,7 @@ def draw_orders():
                     else:
                         profit.stylize("bright_green")
 
-                    if o.type > 1 and not hide_pending:
+                    if o.type < 2 or o.type > 1 and not hide_pending:
                         table.add_row(
                             f"{o.symbol}",
                             f"{o.ticket}",
@@ -289,9 +287,11 @@ def draw_orders():
 
     #return table
     if hide_pending:
-        return Align.center(Panel(table, title="Open Orders"), vertical="middle")
+        #return Align.center(Panel(table, title="Open Orders"), vertical="middle")
+        return table
     else:
-        return Align.center(Panel(table, title="All Orders"), vertical="middle")
+        #return Align.center(Panel(table, title="All Orders"), vertical="middle")
+        return table
 
 
 def draw_pending():
@@ -311,7 +311,6 @@ def draw_pending():
     with lock:
         for key in list(sorted(symbols.keys())):
             s = symbols[key]
-            name = s.name
             bid = s.bid
             ask = s.ask
             digits = s.digits
@@ -329,7 +328,8 @@ def draw_pending():
                         f"{ask:.{digits}f}",
                         )
 
-    return Align.center(Panel(table, title="Pending Orders"), vertical="middle")
+    #return Align.center(Panel(table, title="Pending Orders"), vertical="middle")
+    return table
 
 
 def draw_panel(mode):
@@ -355,6 +355,8 @@ def draw_panel(mode):
             table = draw_orders()
         case "pending":
             table = draw_pending()
+        case _:
+            table = draw_symbols()
 
     #layout["upper"].update(Align.center(table, vertical="middle"))
     #if mode == "pending":
@@ -420,11 +422,11 @@ def wait_for_message():
         with lock:
             live.update(layout, refresh=True)
         while not quit:
-            socks = dict(poller.poll(100))
+            socks = dict(poller.poll(1000))
             if subscriber in socks and socks[subscriber] == zmq.POLLIN:
                 msg = subscriber.recv()
                 with lock:
-                    topic, data = msg.split()
+                    _, data = msg.split()
                     last_message_time = int(time.time())
                     update_symbols(data)
                     layout["lower"].visible = True
@@ -435,10 +437,6 @@ def wait_for_message():
                     layout["upper"].update(nodata)
                     layout["lower"].visible = False
                     live.update(layout, refresh=True)
-            l = len(orders)
-            delete_old_orders()
-            if len(orders) != l:
-                live.update(layout, refresh=True)
 
 
 def main():
@@ -458,54 +456,65 @@ def main():
     lock = threading.Lock()
 
     while not quit:
-        key = getkey()
-        t = int(time.time()) - last_message_time
-        if t < TTL:
-            match key:
-                case ' ':
-                    with lock:
-                        mode_index = (mode_index + 1) % len(modes)
-                        mode = modes[mode_index]
-                        draw_panel(mode)
-                        live.update(layout, refresh=True)
-                case 'H':
-                    with lock:
-                        hide = not hide
-                        draw_panel(mode)
-                        live.update(layout, refresh=True)
-                case 'p':
-                    with lock:
-                        mode_index = 0
-                        mode = modes[mode_index]
-                        draw_panel(mode)
-                        live.update(layout, refresh=True)
-                case 'o':
-                    with lock:
-                        mode_index = 1
-                        mode = modes[mode_index]
-                        draw_panel(mode)
-                        live.update(layout, refresh=True)
-                case 'h':
-                    with lock:
-                        hide_pending = not hide_pending
-                        draw_panel(mode)
-                        live.update(layout, refresh=True)
-                case 'P':
-                    with lock:
-                        mode_index = 2
-                        mode = modes[mode_index]
-                        draw_panel(mode)
-                        live.update(layout, refresh=True)
-                case 'q':
-                    quit = True
-        elif key == 'q':
-            quit = True
+        #key = getkey(False)
+        #key = getch()
+        key = chr(getch())
+        if key:
+            t = int(time.time()) - last_message_time
+            if t < TTL:
+                match key:
+                    case ' ':
+                        with lock:
+                            #mode_index = (mode_index + 1) % len(modes)
+                            if mode_index > 0:
+                                mode_index = 0
+                            else:
+                                mode_index = 1
+                            mode = modes[mode_index]
+                            draw_panel(mode)
+                            live.update(layout, refresh=True)
+                    case 'H':
+                        with lock:
+                            hide = not hide
+                            draw_panel(mode)
+                            live.update(layout, refresh=True)
+                    case 'p':
+                        with lock:
+                            mode_index = 0
+                            mode = modes[mode_index]
+                            draw_panel(mode)
+                            live.update(layout, refresh=True)
+                    case 'o':
+                        with lock:
+                            mode_index = 1
+                            mode = modes[mode_index]
+                            draw_panel(mode)
+                            live.update(layout, refresh=True)
+                    case 'h':
+                        with lock:
+                            if mode == "orders":
+                                hide_pending = not hide_pending
+                                draw_panel(mode)
+                                live.update(layout, refresh=True)
+                    case 'P':
+                        with lock:
+                            mode_index = 2
+                            mode = modes[mode_index]
+                            draw_panel(mode)
+                            live.update(layout, refresh=True)
+                    case 'q':
+                        quit = True
+            elif key == 'q':
+                quit = True
 
         if quit:
             data_thread.join()
-            sys.exit(0)
+            #sys.exit(0)
 
 if __name__ == '__main__':
+    #libname = pathlib.Path().absolute() / "libgetch.so"
+    #c_lib = ctypes.CDLL("/usr/local/lib/libgetch.so")
+
     if len(sys.argv) < 2:
         account = "711700"
     else:
