@@ -77,11 +77,12 @@ class Order:
 
 class Symbol:
     """Class to sum multiple orders of the same symbol"""
-    def __init__(self, name, bid, ask, digits):
+    def __init__(self, name, bid, ask, digits, atr):
         self.name = name
         self.bid = bid
         self.ask = ask
         self.digits = digits
+        self.atr = atr
         self.orders = {}
 
     def add_order(self, order) -> None:
@@ -165,39 +166,63 @@ def update_symbols(msg):
 
     j = json.loads(msg)
 
+    # Update account info
     balance = j["balance"]
     profit = j["profit"]
     equity = j["equity"]
 
+    # Current time as int
     t = int(time.time())
 
-    if "orders" in j:
-        for order in j["orders"]:
-            ticket = order["ticket"]
-            try:
-                o = orders[ticket]
-                o.open_price = order["open_price"]
-                o.profit = order["profit"]
-                o.swap = order["swap"]
-                o.timestamp = t
-            except KeyError:
-                order["timestamp"] = t
-                o = Order(**order)
-                orders[ticket] = o
+    # Get symbol name
+    name = j["symbol"]["name"]
 
-            name = j["symbol"]["name"]
-            if name in symbols:
-                if not o.ticket in symbols[name].orders:
-                    symbols[name].add_order(o)
-            else:
-                symbols[name] = Symbol(
-                    o.symbol,
-                    j["symbol"]["bid"],
-                    j["symbol"]["ask"],
-                    j["symbol"]["digits"],
-                    )
+    # Create tickets/orders
+    for order in j["orders"]:
+        ticket = order["ticket"]
+        try:
+            # Get order object by ticket
+            o = orders[ticket]
+
+            # Open price might change for pending orders
+            o.open_price = order["open_price"]
+
+            # Update profit and swap for open orders
+            o.profit = order["profit"]
+            o.swap = order["swap"]
+
+            # Update timestamp
+            o.timestamp = t
+
+        except KeyError:
+            # Looks like a new order
+            order["timestamp"] = t
+            o = Order(**order)
+            orders[ticket] = o
+
+        if name in symbols:
+            # Add order to existing symbol object
+            if not o.ticket in symbols[name].orders:
                 symbols[name].add_order(o)
+        else:
+            # Create new symbol object
+            symbols[name] = Symbol(
+                o.symbol,
+                j["symbol"]["bid"],
+                j["symbol"]["ask"],
+                j["symbol"]["digits"],
+                j["symbol"]["atr"],
+                )
 
+            # Add order to new symbol object
+            symbols[name].add_order(o)
+
+        # Update bid, ask and atr
+        symbols[name].bid = j["symbol"]["bid"]
+        symbols[name].ask = j["symbol"]["ask"]
+        symbols[name].atr = j["symbol"]["atr"]
+
+    # Cleanup
     delete_old_orders()
 
 
@@ -315,18 +340,30 @@ def draw_pending():
             ask = s.ask
             digits = s.digits
             for k in list(sorted(symbols[key].orders.keys())):
-                #for k in s.orders.keys():
                 o = s.orders[k]
-                if o.type > 1:
-                    table.add_row(
-                        f"{s.name}",
-                        f"{o.ticket}",
-                        f"{ORDER_TYPES[o.type]}",
-                        f"{o.size:.2f}",
-                        f"{o.open_price:.{digits}f}",
-                        f"{bid:.{digits}f}",
-                        f"{ask:.{digits}f}",
-                        )
+                if o.type < 2:
+                    continue
+                match ORDER_TYPES[o.type]:
+                    case "BUY LIMIT":
+                        if s.ask - o.open_price < s.atr:
+                            style = "white on dark_green"
+                        else:
+                            style = "white"
+                    case "SELL LIMIT":
+                        if o.open_price - s.bid < s.atr:
+                            style = "white on dark_green"
+                        else:
+                            style = "white"
+                table.add_row(
+                    f"{s.name}",
+                    f"{o.ticket}",
+                    f"{ORDER_TYPES[o.type]}",
+                    f"{o.size:.2f}",
+                    f"{o.open_price:.{digits}f}",
+                    f"{bid:.{digits}f}",
+                    f"{ask:.{digits}f}",
+                    style=style
+                    )
 
     #return Align.center(Panel(table, title="Pending Orders"), vertical="middle")
     return table
@@ -411,7 +448,7 @@ def wait_for_message():
 
     nodata = Panel(Align.center(
         Text(f"{account} - NO DATA", justify="center"),
-        vertical="middle"), style="red")
+        vertical="middle"), style="white")
 
     layout["upper"].update(nodata)
 

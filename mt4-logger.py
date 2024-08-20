@@ -1,7 +1,5 @@
 #!/usr/bin/env -S python -u
 
-import sys
-import os
 import json
 import zmq
 import time
@@ -25,4 +23,4 @@ if subscriber in socks and socks[subscriber] == zmq.POLLIN:
     balance = j["balance"]
     equity = j["equity"]
 
-print(int(time.time()), balance, equity)
+    print(f"{int(time.time())} {balance:.2f} {equity:.2f}")
